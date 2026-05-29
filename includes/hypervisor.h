@@ -334,7 +334,11 @@ typedef struct _VCPU_DATA {
     ULONG_PTR HostRsp;
 
     BOOLEAN IsVirtualized;
+    BOOLEAN ShutdownRequested;
     ULONG ProcessorNumber;
+
+    CONTEXT LaunchContext;
+    KDPC LaunchDpc;
 } VCPU_DATA, * PVCPU_DATA;
 
 typedef struct _HYPERVISOR_DATA {
@@ -391,6 +395,7 @@ BOOLEAN HvCheckVmxSupport();
 NTSTATUS HvVirtualizeAllProcessors();
 NTSTATUS HvVirtualizeProcessor(ULONG processorNumber);
 VOID HvDevirtualizeProcessor(ULONG processorNumber);
+ULONG_PTR HvLaunchDpcRoutine(KDPC* Dpc, PVOID Context, PVOID SystemArgument1, PVOID SystemArgument2);
 
 PVMX_REGION HvAllocateVmxRegion();
 VOID HvFreeVmxRegion(PVMX_REGION region);
@@ -412,12 +417,16 @@ VOID HvHandleVmcall(PGUEST_REGISTERS guestRegisters);
 VOID HvHandleMsrRead(PGUEST_REGISTERS guestRegisters);
 VOID HvHandleMsrWrite(PGUEST_REGISTERS guestRegisters);
 VOID HvHandleEptViolation(PGUEST_REGISTERS guestRegisters);
+VOID HvHandleCrAccess(PGUEST_REGISTERS guestRegisters);
+VOID HvHandleDrAccess(PGUEST_REGISTERS guestRegisters);
+VOID HvHandleIoInstruction(PGUEST_REGISTERS guestRegisters);
 
 ULONG_PTR HvGetGuestRip();
 VOID HvSetGuestRip(ULONG_PTR rip);
 VOID HvAdvanceGuestRip();
 ULONG_PTR HvGetInstructionLength();
 
+VOID AsmVmExitEntry();
 NTSTATUS AsmVmxLaunch();
 VOID AsmVmxCall();
 NTSTATUS AsmInvept(ULONG Type, PVOID Descriptor);
@@ -427,3 +436,16 @@ VOID AsmVmxRestoreState(PGUEST_REGISTERS GuestRegisters);
 
 extern HYPERVISOR_DATA g_HypervisorData;
 extern PVOID g_MsrBitmap;
+extern PVOID g_IoBitmapA;
+extern PVOID g_IoBitmapB;
+extern volatile LONG g_HvShutdownRequested;
+
+NTSYSAPI VOID NTAPI RtlCaptureContext(PCONTEXT ContextRecord);
+NTSYSAPI VOID NTAPI RtlRestoreContext(PCONTEXT ContextRecord, PEXCEPTION_RECORD ExceptionRecord);
+
+typedef struct _PHYSICAL_MEMORY_RANGE {
+    PHYSICAL_ADDRESS BaseAddress;
+    PHYSICAL_ADDRESS NumberOfBytes;
+} PHYSICAL_MEMORY_RANGE, *PPHYSICAL_MEMORY_RANGE;
+
+NTSYSAPI PPHYSICAL_MEMORY_RANGE NTAPI MmGetPhysicalMemoryRanges(VOID);
