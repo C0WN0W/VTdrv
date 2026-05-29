@@ -91,12 +91,15 @@ NTSTATUS EptBuildTables(PEPT_TABLES EptTables)
 
     EptTables->Pml4 = EptAllocatePml4();
     if (!EptTables->Pml4) {
+        EptTerminatePtManager(&EptTables->PtManager);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
     EptTables->Pml4Physical = MmGetPhysicalAddress(EptTables->Pml4);
 
     EptTables->Pdpt = EptAllocatePdpt();
     if (!EptTables->Pdpt) {
+        EptTerminatePtManager(&EptTables->PtManager);
+        MmFreeContiguousMemory(EptTables->Pml4);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
     EptTables->PdptPhysical = MmGetPhysicalAddress(EptTables->Pdpt);
@@ -119,6 +122,10 @@ NTSTATUS EptBuildTables(PEPT_TABLES EptTables)
     );
 
     if (!EptTables->Pd || !EptTables->PdPhysical) {
+        if (EptTables->Pd) ExFreePoolWithTag(EptTables->Pd, 'TPEE');
+        EptTerminatePtManager(&EptTables->PtManager);
+        MmFreeContiguousMemory(EptTables->Pdpt);
+        MmFreeContiguousMemory(EptTables->Pml4);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -128,6 +135,14 @@ NTSTATUS EptBuildTables(PEPT_TABLES EptTables)
     for (ULONG i = 0; i < EptTables->PdCount; i++) {
         EptTables->Pd[i] = EptAllocatePd();
         if (!EptTables->Pd[i]) {
+            for (ULONG j = 0; j < i; j++) {
+                MmFreeContiguousMemory(EptTables->Pd[j]);
+            }
+            ExFreePoolWithTag(EptTables->PdPhysical, 'TPEE');
+            ExFreePoolWithTag(EptTables->Pd, 'TPEE');
+            EptTerminatePtManager(&EptTables->PtManager);
+            MmFreeContiguousMemory(EptTables->Pdpt);
+            MmFreeContiguousMemory(EptTables->Pml4);
             return STATUS_INSUFFICIENT_RESOURCES;
         }
         EptTables->PdPhysical[i] = MmGetPhysicalAddress(EptTables->Pd[i]);
