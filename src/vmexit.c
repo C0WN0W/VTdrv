@@ -1,4 +1,5 @@
 #include "hypervisor.h"
+#include "ept.h"
 
 VOID __fastcall HvVmExitHandler(PGUEST_REGISTERS guestRegisters)
 {
@@ -7,6 +8,7 @@ VOID __fastcall HvVmExitHandler(PGUEST_REGISTERS guestRegisters)
         ULONG currentCpu = KeGetCurrentProcessorNumber();
         if (currentCpu < g_HypervisorData.ProcessorCount) {
             PVCPU_DATA vcpu = &g_HypervisorData.VcpuData[currentCpu];
+            vcpu->ShutdownRequested = TRUE;
             vcpu->IsVirtualized = FALSE;
 
             __vmx_off();
@@ -51,7 +53,6 @@ VOID __fastcall HvVmExitHandler(PGUEST_REGISTERS guestRegisters)
 
         case EXIT_REASON_EXCEPTION_NMI:
             DbgPrint("[HV] Exception/NMI\n");
-            HvAdvanceGuestRip();
             break;
 
         case EXIT_REASON_EXTERNAL_INTERRUPT:
@@ -89,12 +90,15 @@ VOID __fastcall HvVmExitHandler(PGUEST_REGISTERS guestRegisters)
             break;
 
         case EXIT_REASON_RDTSC:
+        {
             DbgPrint("[HV] RDTSC instruction\n");
 
-            guestRegisters->Rax = (ULONG)(__rdtsc() & 0xFFFFFFFF);
-            guestRegisters->Rdx = (ULONG)(__rdtsc() >> 32);
+            ULONG64 tsc = __rdtsc();
+            guestRegisters->Rax = (ULONG)(tsc & 0xFFFFFFFF);
+            guestRegisters->Rdx = (ULONG)(tsc >> 32);
             HvAdvanceGuestRip();
             break;
+        }
 
         case EXIT_REASON_RDTSCP:
         {
@@ -189,15 +193,21 @@ VOID HvHandleVmcall(PGUEST_REGISTERS guestRegisters)
             }
 
             SIZE_T bytesCopied;
-            NTSTATUS status = MmCopyVirtualMemory(
-                PsGetCurrentProcess(),
-                address,
-                PsGetCurrentProcess(),
-                buffer,
-                size,
-                KernelMode,
-                &bytesCopied
-            );
+            NTSTATUS status;
+
+            __try {
+                status = MmCopyVirtualMemory(
+                    PsGetCurrentProcess(),
+                    address,
+                    PsGetCurrentProcess(),
+                    buffer,
+                    size,
+                    KernelMode,
+                    &bytesCopied
+                );
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                status = STATUS_ACCESS_VIOLATION;
+            }
 
             guestRegisters->Rax = (ULONG_PTR)status;
             break;
@@ -217,15 +227,21 @@ VOID HvHandleVmcall(PGUEST_REGISTERS guestRegisters)
             }
 
             SIZE_T bytesCopied;
-            NTSTATUS status = MmCopyVirtualMemory(
-                PsGetCurrentProcess(),
-                buffer,
-                PsGetCurrentProcess(),
-                address,
-                size,
-                KernelMode,
-                &bytesCopied
-            );
+            NTSTATUS status;
+
+            __try {
+                status = MmCopyVirtualMemory(
+                    PsGetCurrentProcess(),
+                    buffer,
+                    PsGetCurrentProcess(),
+                    address,
+                    size,
+                    KernelMode,
+                    &bytesCopied
+                );
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                status = STATUS_ACCESS_VIOLATION;
+            }
 
             guestRegisters->Rax = (ULONG_PTR)status;
             break;
@@ -350,7 +366,13 @@ VOID HvHandleEptViolation(PGUEST_REGISTERS guestRegisters)
         return;
     }
 
-    HvAdvanceGuestRip();
+    DbgPrint("[HV] EPT Violation unhandled, GPA=0x%llx, guest RIP=0x%llx - restoring access\n",
+        guestPhysicalAddress, HvGetGuestRip());
+
+    NTSTATUS permStatus = EptSetPagePermissions(g_EptTables, guestPhysicalAddress, TRUE, TRUE, TRUE);
+    if (!NT_SUCCESS(permStatus)) {
+        DbgPrint("[HV] WARNING: Failed to restore EPT permissions: 0x%X\n", permStatus);
+    }
 }
 
 ULONG_PTR HvGetGuestRip()

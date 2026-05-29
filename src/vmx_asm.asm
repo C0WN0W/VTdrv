@@ -21,9 +21,9 @@ AsmVmExitEntry PROC
     push r15
 
     mov rcx, rsp
-    sub rsp, 20h
+    sub rsp, 28h
     call HvVmExitHandler
-    add rsp, 20h
+    add rsp, 28h
 
     pop r15
     pop r14
