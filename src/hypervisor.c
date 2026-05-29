@@ -8,7 +8,7 @@ PVOID g_IoBitmapB = NULL;
 volatile LONG g_HvShutdownRequested = 0;
 static PVOID g_PowerCallbackHandle = NULL;
 
-static VOID HvPowerSettingCallback(
+static NTSTATUS HvPowerSettingCallback(
     PVOID Context,
     ULONG Type,
     PVOID Setting)
@@ -18,6 +18,7 @@ static VOID HvPowerSettingCallback(
     UNREFERENCED_PARAMETER(Setting);
 
     DbgPrint("[HV] Power state change detected\n");
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS HvInitialize()
@@ -98,7 +99,7 @@ NTSTATUS HvInitialize()
     PoRegisterPowerSettingCallback(
         NULL,
         &GUID_MONITOR_POWER_ON,
-        (PPO_REGISTER_POWER_SETTING_CALLBACK)HvPowerSettingCallback,
+        HvPowerSettingCallback,
         NULL,
         &g_PowerCallbackHandle
     );
@@ -142,6 +143,18 @@ VOID HvTerminate()
 
         KeStallExecutionProcessor(1000);
         maxWait++;
+    }
+
+    ULONG remainingCpus = 0;
+    for (ULONG i = 0; i < g_HypervisorData.ProcessorCount; i++) {
+        if (g_HypervisorData.VcpuData[i].IsVirtualized) {
+            remainingCpus++;
+        }
+    }
+
+    if (remainingCpus > 0) {
+        DbgPrint("[HV] WARNING: %d CPUs still virtualized after timeout, aborting cleanup\n", remainingCpus);
+        return;
     }
 
     for (ULONG i = 0; i < g_HypervisorData.ProcessorCount; i++) {
@@ -302,6 +315,17 @@ ULONG_PTR HvLaunchDpcRoutine(KDPC* Dpc, PVOID Context, PVOID SystemArgument1, PV
     NTSTATUS status = AsmVmxLaunch();
 
     DbgPrint("[HV] CPU %d: VMLAUNCH returned (status=%d), VM exited\n", currentCpu, status);
+
+    if (!NT_SUCCESS(status)) {
+        DbgPrint("[HV] CPU %d: VMLAUNCH failed, cleaning up VMXON\n", currentCpu);
+        __vmx_off();
+
+        ULONG_PTR cr4 = __readcr4();
+        cr4 &= ~CR4_VMXE;
+        __writecr4(cr4);
+    }
+
+    vcpu->IsVirtualized = FALSE;
 
     return 0;
 }
@@ -664,11 +688,13 @@ VOID HvSetupVmcsGuestState()
     __vmx_vmwrite(GUEST_SYSENTER_ESP, __readmsr(IA32_SYSENTER_ESP));
     __vmx_vmwrite(GUEST_SYSENTER_EIP, __readmsr(IA32_SYSENTER_EIP));
 
-    __vmx_vmwrite(GUEST_IA32_EFER, __readmsr(IA32_EFER));
-    __vmx_vmwrite(GUEST_IA32_EFER_HIGH, __readmsr(IA32_EFER) >> 32);
+    ULONG64 eferValue = __readmsr(IA32_EFER);
+    __vmx_vmwrite(GUEST_IA32_EFER, eferValue);
+    __vmx_vmwrite(GUEST_IA32_EFER_HIGH, eferValue >> 32);
 
-    __vmx_vmwrite(GUEST_IA32_DEBUGCTL, __readmsr(IA32_DEBUGCTL));
-    __vmx_vmwrite(GUEST_IA32_DEBUGCTL_HIGH, __readmsr(IA32_DEBUGCTL) >> 32);
+    ULONG64 debugCtlValue = __readmsr(IA32_DEBUGCTL);
+    __vmx_vmwrite(GUEST_IA32_DEBUGCTL, debugCtlValue);
+    __vmx_vmwrite(GUEST_IA32_DEBUGCTL_HIGH, debugCtlValue >> 32);
 
     __vmx_vmwrite(GUEST_ACTIVITY_STATE, 0);
 
@@ -720,11 +746,13 @@ VOID HvSetupVmcsHostState(PVCPU_DATA vcpu)
     __vmx_vmwrite(HOST_IA32_SYSENTER_ESP, __readmsr(IA32_SYSENTER_ESP));
     __vmx_vmwrite(HOST_IA32_SYSENTER_EIP, __readmsr(IA32_SYSENTER_EIP));
 
-    __vmx_vmwrite(HOST_IA32_PAT, __readmsr(IA32_PAT));
-    __vmx_vmwrite(HOST_IA32_PAT_HIGH, __readmsr(IA32_PAT) >> 32);
+    ULONG64 hostPatValue = __readmsr(IA32_PAT);
+    __vmx_vmwrite(HOST_IA32_PAT, hostPatValue);
+    __vmx_vmwrite(HOST_IA32_PAT_HIGH, hostPatValue >> 32);
 
-    __vmx_vmwrite(HOST_IA32_EFER, __readmsr(IA32_EFER));
-    __vmx_vmwrite(HOST_IA32_EFER_HIGH, __readmsr(IA32_EFER) >> 32);
+    ULONG64 hostEferValue = __readmsr(IA32_EFER);
+    __vmx_vmwrite(HOST_IA32_EFER, hostEferValue);
+    __vmx_vmwrite(HOST_IA32_EFER_HIGH, hostEferValue >> 32);
 
     __vmx_vmwrite(HOST_RSP, vcpu->HostRsp);
 
