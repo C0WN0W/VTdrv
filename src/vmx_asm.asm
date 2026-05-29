@@ -2,7 +2,7 @@
 
 EXTERN HvVmExitHandler:PROC
 
-AsmVmxLaunch PROC
+AsmVmExitEntry PROC
     pushfq
     push rax
     push rcx
@@ -43,13 +43,21 @@ AsmVmxLaunch PROC
     popfq
 
     vmresume
-    jz VmxError
-    jc VmxError
+    jmp AsmVmExitFailure
+AsmVmExitEntry ENDP
 
+AsmVmExitFailure PROC
+    int 3
+AsmVmExitFailure ENDP
+
+AsmVmxLaunch PROC
+    vmlaunch
+    jz VmxLaunchError
+    jc VmxLaunchError
     xor rax, rax
     ret
 
-VmxError:
+VmxLaunchError:
     mov rax, 1
     ret
 AsmVmxLaunch ENDP

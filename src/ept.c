@@ -138,20 +138,41 @@ NTSTATUS EptBuildTables(PEPT_TABLES EptTables)
         EptTables->Pdpt[i].Fields.PageFrameNumber = EptTables->PdPhysical[i].QuadPart >> 12;
     }
 
+    PPHYSICAL_MEMORY_RANGE memRanges = MmGetPhysicalMemoryRanges();
+
     for (ULONG pdptIndex = 0; pdptIndex < 512; pdptIndex++) {
         PEPT_PDE pd = EptTables->Pd[pdptIndex];
 
         for (ULONG pdIndex = 0; pdIndex < 512; pdIndex++) {
-
             ULONG64 physicalAddress = ((ULONG64)pdptIndex << 30) | ((ULONG64)pdIndex << 21);
+
+            BOOLEAN isRam = FALSE;
+
+            if (memRanges) {
+                ULONG64 pageEnd = physicalAddress + (2 * 1024 * 1024);
+
+                for (ULONG r = 0; memRanges[r].NumberOfBytes.QuadPart != 0; r++) {
+                    ULONG64 rangeStart = memRanges[r].BaseAddress.QuadPart;
+                    ULONG64 rangeEnd = rangeStart + memRanges[r].NumberOfBytes.QuadPart;
+
+                    if (physicalAddress >= rangeStart && pageEnd <= rangeEnd) {
+                        isRam = TRUE;
+                        break;
+                    }
+                }
+            }
 
             pd[pdIndex].Fields.Read = 1;
             pd[pdIndex].Fields.Write = 1;
             pd[pdIndex].Fields.Execute = 1;
-            pd[pdIndex].Fields.MemoryType = MEMORY_TYPE_WB;
+            pd[pdIndex].Fields.MemoryType = isRam ? MEMORY_TYPE_WB : MEMORY_TYPE_UC;
             pd[pdIndex].Fields.LargePage = 1;
             pd[pdIndex].Fields.PageFrameNumber = physicalAddress >> 12;
         }
+    }
+
+    if (memRanges) {
+        ExFreePool(memRanges);
     }
 
     EptTables->EptPointer.Fields.MemoryType = MEMORY_TYPE_WB;
@@ -160,7 +181,7 @@ NTSTATUS EptBuildTables(PEPT_TABLES EptTables)
     EptTables->EptPointer.Fields.PageFrameNumber = EptTables->Pml4Physical.QuadPart >> 12;
 
     DbgPrint("[EPT] EPT tables built successfully\n");
-    DbgPrint("[EPT] Mapped 512 GB physical memory using 2MB pages\n");
+    DbgPrint("[EPT] Mapped 512 GB physical memory using 2MB pages (WB for RAM, UC for MMIO)\n");
     DbgPrint("[EPT] PT tables will be allocated on-demand\n");
 
     return STATUS_SUCCESS;
